@@ -1,0 +1,717 @@
+---
+title: "STA141A Final Project"
+author: "Niharika Suravarjjala"
+date: "June 12th, 2023"
+output: html_document
+---
+
+# I. Abstract
+
+This report will analyze the feedback type and average spike count of the neural activity of four mice across 18 experimental sessions (with numerous trials in each session). The report will visualize and discuss findings on how the average spike count changes with time, how feedback type varies throughout experiments, and will utilize logistic regression to construct a prediction model for feedback type. 
+
+# II. Introduction
+
+# Background
+
+In this project, we will examine a portion of the information gathered by Steinmetz et al. (2019) during a mouse study. We will concentrate on 18 sessions (Sessions 1 to 18) from four distinct mice: Cori, Frossman, Hence, and Lederberg. The trials were carried out on 10 mice spanning 39 sessions.
+
+The mice were exposed to visual stimuli on two displays that were placed on either side of them throughout each session. The contrast levels of the stimuli varied and could be 0, 0.25, 0.5, or 1. The lack of a stimulus was indicated by a contrast level of 0. The mice had to use a wheel that was controlled by their forepaws to make choices based on visual cues.
+
+The following were the decision criteria:
+
+1. The mouse had to turn the wheel to the right for success or to the left for failure if the contrast on the left screen was higher than the contrast on the right screen.
+2. The mouse had to turn the wheel to the left for success or to the right for failure if the contrast on the right screen was higher than the contrast on the left screen.
+3. The mouse had to keep the wheel still for success or move it for failure if the left and right contrasts were both zero.
+4. To succeed, the mouse had to randomly select either left or right as the proper decision, with a 50% chance of either, if both the left and right contrasts were equal (and non-zero).
+
+Throughout the tests, the brain activity in the mice's visual cortex was captured. We will pay close attention to the spike trains of neurons between the initiation of the stimuli and 0.4 seconds after the onset. Spike trains are assemblages of time stamps associated with neural activation.
+
+# Objective
+
+The objective of this project is to build a predictive model using the brain activity data (spike trains in spks) and the stimuli (the left and right contrasts). The model will be used to predict the outcome (i.e., feedback type) of each trial. 
+
+# Data Structure
+
+There are five variables for each trial. 
+
+1. Feedback Type = type of feedback, Success = 1, Failure = -1
+2. Contrast Left = left stimulus contrast
+3. Contrast Right = right stimulus contrast
+4. Time = centers of the time bins for spks 
+5. Spks = numbers of spikes of neurons in the visual cortex in time bins defined in time
+6. Brain Area = area of the brain where each neuron lives 
+
+# III. Exploratory Analysis
+
+In this section, we will explore the features of the data sets to better guide the construction of our prediction model. We will do this by describing data structures across sessions, exploring neurql activities in each trial, exploring changes across trials, and exploring homogeneity and heterogeneity across sessions and mice. 
+
+# (i) Data Structures Across Sessions
+
+```{r, echo= FALSE}
+#Suppress all Warnings
+suppressWarnings(library(tidyverse))
+suppressWarnings(library(knitr))
+suppressWarnings(library(dplyr))
+```
+
+```{r, echo= FALSE}
+#Empty list to store session data
+session=list()
+
+#Read and store the session data for each session (1-18)
+for(i in 1:18){
+  session[[i]]=readRDS(paste('~/Desktop/everything./stats/sta 141a/Project/sessions/session',i,'.rds',sep=''))
+  }
+
+#Calculate the number of sessions
+n.session=length(session)
+
+#Create a metadata table using the tidyverse library
+meta <- tibble(
+  session = 1:n.session,
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session),
+)
+
+# Iterate over each session to extract metadata information
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,2]=tmp$mouse_name;
+  meta[i,3]=tmp$date_exp;
+  meta[i,4]=length(unique(tmp$brain_area));
+  meta[i,5]=dim(tmp$spks[[1]])[1];
+  meta[i,6]=length(tmp$feedback_type);
+  meta[i,7]=mean(tmp$feedback_type+1)/2;
+}
+
+# Print the metadata table using kable to generate an HTML table
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2, caption = "Features Across Sessions", align = "c", col.names = c("Session", "Mouse Name", "Experiment Date", "Brain Areas", "Number of Neurons", "Number of Trials", "Success Rate")) 
+
+```
+
+
+The above table describes the features across sessions - indicating the mouse, and experiment date of each session, the number of brain areas the experiment covers, the number of neurons activated, the total number of trials, and the success rate of the experiments. Lederberg had the highest number of sessions while Cori had the least. The success rate was lowest for Cori in the 1st session and highest for Lederberg in the 17th session. The metadata provides an overview of the data structures across the 18 sessions before further exploration.
+
+
+# (ii) Neural Activities During Each Trial
+
+```{r, echo= FALSE}
+#Session and Trial Indicators
+i.s=2 
+i.t=1 
+
+#Retrieve spike train data and brain area for the specified session and trial
+spk.trial = session[[i.s]]$spks[[i.t]]
+area=session[[i.s]]$brain_area
+
+#Calculate the number of spikes for each neuron during this trial
+spk.count=apply(spk.trial,1,sum)
+
+#Calculate the average spike count by brain area using tapply
+spk.average.tapply=tapply(spk.count, area, mean)
+
+#Prepare a data frame using dplyr for further analysis
+tmp <- data.frame(
+  area = area,
+  spikes = spk.count
+)
+
+#Calculate the average spike count by area using dplyr
+spk.average.dplyr =tmp %>%
+  group_by(area) %>%
+  summarize(mean= mean(spikes))
+
+#Define a function to calculate the average spike area for a given trial
+average_spike_area<-function(i.t,this_session){
+  spk.trial = this_session$spks[[i.t]]
+  area= this_session$brain_area
+  spk.count=apply(spk.trial,1,sum)
+  spk.average.tapply=tapply(spk.count, area, mean)
+  return(spk.average.tapply)
+  }
+
+#Test the average_spike_area function with a specific trial and session
+#average_spike_area(1,this_session = session[[i.s]])
+```
+
+```{r, echo= FALSE}
+#Create an empty list to store the trial summary dataframes
+trial_summary_list <- vector("list", length = 18)
+
+#Loop over the sessions
+for (i.s in 1:18) {
+  n.trial <- length(session[[i.s]]$feedback_type)
+  n.area <- length(unique(session[[i.s]]$brain_area))
+
+  trial.summary <- matrix(nrow = n.trial, ncol = n.area + 1 + 2 + 1 + 1)
+
+  for (i.t in 1:n.trial) {
+    trial.summary[i.t, ] <- c(average_spike_area(i.t, this_session = session[[i.s]]),
+                              session[[i.s]]$feedback_type[i.t],
+                              session[[i.s]]$contrast_left[i.t],
+                              session[[i.s]]$contrast_right[i.t],
+                              i.t,
+                              session[[i.s]]$time[[i.t]][1])
+  }
+  
+  colnames(trial.summary) <- c(names(average_spike_area(i.t, this_session = session[[i.s]])),
+                               'feedback', 'left_contr', 'right_contr', 'id', 'time')
+  
+  trial_summary_df <- as.data.frame(trial.summary)
+  
+  
+#Store the trial summary dataframe in the list
+  trial_summary_list[[i.s]] <- trial_summary_df
+}
+
+# Access each session's trial summary dataframe from the list
+# For example, trial summary dataframe for session 1:
+session1_trial_summary <- trial_summary_list[[1]]
+# For session 2:
+session2_trial_summary <- trial_summary_list[[2]]
+# Session 3
+session3_trial_summary <- trial_summary_list[[3]]
+# Session 4
+session4_trial_summary <- trial_summary_list[[4]]
+# Session 5
+session5_trial_summary <- trial_summary_list[[5]]
+# Session 6
+session6_trial_summary <- trial_summary_list[[6]]
+# Session 7
+session7_trial_summary <- trial_summary_list[[7]]
+# Session 8
+session8_trial_summary <- trial_summary_list[[8]]
+# Session 9
+session9_trial_summary <- trial_summary_list[[9]]
+# Session 10
+session10_trial_summary <- trial_summary_list[[10]]
+# Session 11
+session11_trial_summary <- trial_summary_list[[11]]
+# Session 12
+session12_trial_summary <- trial_summary_list[[12]]
+# Session 13
+session13_trial_summary <- trial_summary_list[[13]]
+# Session 14
+session14_trial_summary <- trial_summary_list[[14]]
+# Session 15
+session15_trial_summary <- trial_summary_list[[15]]
+# Session 16
+session16_trial_summary <- trial_summary_list[[16]]
+# Session 17
+session17_trial_summary <- trial_summary_list[[17]]
+# Session 18
+session18_trial_summary <- trial_summary_list[[18]]
+
+
+
+```
+
+```{r, echo= FALSE}
+#Append Session 1 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session1_trial_summary$avgspike = rowMeans(session1_trial_summary[, 1:8])
+session1_trial_summary$session_number <- 1
+#session1_trial_summary
+
+#Append Session 2 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session2_trial_summary$avgspike = rowMeans(session2_trial_summary[, 1:5])
+session2_trial_summary$session_number <- 2
+#session2_trial_summary
+
+#Append Session 3 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session3_trial_summary$avgspike = rowMeans(session3_trial_summary[, 1:11])
+session3_trial_summary$session_number <- 3
+#session3_trial_summary
+
+#Append Session 4 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session4_trial_summary$avgspike = rowMeans(session4_trial_summary[, 1:11])
+session4_trial_summary$session_number <- 4
+#session4_trial_summary
+
+#Append Session 5 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session5_trial_summary$avgspike = rowMeans(session5_trial_summary[, 1:10])
+session5_trial_summary$session_number <- 5
+#session5_trial_summary
+
+#Append Session 6 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session6_trial_summary$avgspike = rowMeans(session6_trial_summary[, 1:5])
+session6_trial_summary$session_number <- 6
+#session6_trial_summary
+
+#Append Session 7 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session7_trial_summary$avgspike = rowMeans(session7_trial_summary[, 1:8])
+session7_trial_summary$session_number <- 7
+#session7_trial_summary
+
+#Append Session 8 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session8_trial_summary$avgspike = rowMeans(session8_trial_summary[, 1:15])
+session8_trial_summary$session_number <- 8
+#session8_trial_summary
+
+#Append Session 9 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session9_trial_summary$avgspike = rowMeans(session9_trial_summary[, 1:12])
+session9_trial_summary$session_number <- 9
+#session9_trial_summary
+
+#Append Session 10 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session10_trial_summary$avgspike = rowMeans(session10_trial_summary[, 1:13])
+session10_trial_summary$session_number <- 10
+#session10_trial_summary
+
+#Append Session 11 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session11_trial_summary$avgspike = rowMeans(session11_trial_summary[, 1:6])
+session11_trial_summary$session_number <- 11
+#session11_trial_summary
+
+#Append Session 12 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session12_trial_summary$avgspike = rowMeans(session12_trial_summary[, 1:12])
+session12_trial_summary$session_number <- 12
+#session12_trial_summary
+
+#Append Session 13 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session13_trial_summary$avgspike = rowMeans(session13_trial_summary[, 1:15])
+session13_trial_summary$session_number <- 13
+#session13_trial_summary
+
+#Append Session 14 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session14_trial_summary$avgspike = rowMeans(session14_trial_summary[, 1:10])
+session14_trial_summary$session_number <- 14
+#session14_trial_summary
+
+#Append Session 15 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session15_trial_summary$avgspike = rowMeans(session15_trial_summary[, 1:8])
+session15_trial_summary$session_number <- 15
+#session15_trial_summary
+
+#Append Session 16 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session16_trial_summary$avgspike = rowMeans(session16_trial_summary[, 1:6])
+session16_trial_summary$session_number <- 16
+#session16_trial_summary
+
+#Append Session 17 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session17_trial_summary$avgspike = rowMeans(session17_trial_summary[, 1:6])
+session17_trial_summary$session_number <- 17
+#session17_trial_summary
+
+#Append Session 18 Trial Summary Dataframe with Average Spikes Per Brain Area for Each Trial
+session18_trial_summary$avgspike = rowMeans(session18_trial_summary[, 1:10])
+session18_trial_summary$session_number <- 18
+#session18_trial_summary
+
+```
+
+```{r, echo= FALSE}
+# Create a list of your 18 dataframes
+dataframes <- list(session1_trial_summary, session2_trial_summary, session3_trial_summary, session4_trial_summary, session5_trial_summary, session6_trial_summary, session7_trial_summary, session8_trial_summary, session9_trial_summary, session10_trial_summary, session11_trial_summary, session12_trial_summary, session13_trial_summary, session14_trial_summary, session15_trial_summary, session16_trial_summary, session17_trial_summary, session18_trial_summary)
+
+# Check column names and structures of the dataframes
+common_columns <- intersect(names(dataframes[[1]]), names(dataframes[[2]]))
+for (i in 3:length(dataframes)) {
+  common_columns <- intersect(common_columns, names(dataframes[[i]]))
+}
+
+# Create an empty dataframe with common columns
+combined_data <- data.frame()
+
+# Iterate over each dataframe and combine the data
+for (i in 1:length(dataframes)) {
+  df <- dataframes[[i]]
+  
+  # Subset the dataframe to include only common columns
+  df <- df[, common_columns]
+  
+  # Add a session number column
+  df$Session <- paste("Session", i)
+  
+  # Append to the combined dataframe
+  combined_data <- rbind(combined_data, df)
+}
+
+# Print the combined dataframe
+#print(combined_data)
+
+
+```
+
+```{r, echo= FALSE}
+
+# Create an empty data frame
+combined_df <- data.frame()
+
+# Iterate over each dataframe and combine avgspike with session number
+for (i in 1:length(dataframes)) {
+  df <- dataframes[[i]]
+  session_num <- paste("Session", i)
+  
+  # Create a new data frame with session number and avgspike
+  session_df <- data.frame(Session = session_num, AvgSpike = df$avgspike)
+  
+  # Append to the combined data frame
+  combined_df <- rbind(combined_df, session_df)
+}
+
+# Print the combined data frame
+#print(combined_df)
+
+```
+
+
+```{r, echo= FALSE}
+library(ggplot2)
+
+# Convert Session to factor with 1-18 session order
+combined_df$Session <- factor(combined_df$Session, levels = paste("Session", 1:18))
+
+# Histogram plot for each session
+histogram_plot <- ggplot(combined_df, aes(x = AvgSpike)) +
+  geom_histogram(aes(y = ..count..), bins = 15, fill = "lightblue", color = "black") +
+  geom_density(color = "red") +
+  labs(x = "Average Spike Count", y = "Count") +
+  ggtitle("Histograms with Density Curves of Average Spike Count") +
+  facet_wrap(~ Session, nrow = 3, ncol = 6, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# Display the plot
+print(histogram_plot)
+
+```
+
+
+Plotting the average spike count per session, allows us to better visualize the density curve for each session. Although a vast majority of the plots are skewed left or right, Session 12 and 16 are approximately normal. The average spike count of the first and last sessions seem to be significantly lower than the remaining sessions. Additionally for most sessions the spike count increases significantly towards the middle trials in the session, starting and ending with rather low spike counts on average.
+
+```{r, echo= FALSE}
+
+# Create an empty data frame
+feedback_df <- data.frame()
+
+# Iterate over each dataframe and combine avgspike with session number
+for (i in 1:length(dataframes)) {
+  df <- dataframes[[i]]
+  session_num <- paste("Session", i)
+  
+  # Create a new data frame with session number and feedback
+  type_df <- data.frame(Session = session_num, Feedback = df$feedback)
+  
+  # Append to the combined data frame
+  feedback_df <- rbind(feedback_df, type_df)
+}
+
+library(dplyr)
+
+# Create a new column "Feedback_Label" based on "Feedback" column
+feedback_df <- feedback_df %>%
+  mutate(Feedback_Label = ifelse(Feedback == 1, "Success", "Failure"))
+
+
+# Print the combined data frame
+#print(feedback_df)
+
+
+```
+
+```{r, echo= FALSE}
+
+# Convert Session to factor with desired order
+feedback_df$Session <- factor(feedback_df$Session, levels = paste("Session", 1:18))
+
+# Convert Feedback_Label to factor
+feedback_df$Feedback_Label <- factor(feedback_df$Feedback_Label, levels = c("Failure", "Success"))
+
+# Set custom fill colors
+fill_colors <- c("Failure" = "lightblue", "Success" = "lightgreen")
+
+# Create a histogram plot for each session
+histogram_plot <- ggplot(feedback_df, aes(x = Feedback_Label, fill = Feedback_Label)) +
+  geom_bar() +
+  scale_fill_manual(values = fill_colors) +
+  labs(x = "Feedback", y = "Count") +
+  ggtitle("Histograms of Feedback Type Across Sessions") +
+  facet_wrap(~ Session, nrow = 3, ncol = 6, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# Display the plot
+print(histogram_plot)
+
+```
+
+The above figure displays the feedback type across sessions with the x axis representing either a success or failure and the y representing the frequency. Some notable points are that the mice always have more successes than failures even if it gets close on which is greater. 
+
+
+# (iii) Changes Across Trials
+
+```{r, echo= FALSE}
+
+#Create an empty list to store the data for plotting
+plot_data <- list()
+
+#Iterate over each dataframe and prepare the data for plotting
+for (i in 1:length(dataframes)) {
+  df <- dataframes[[i]]
+  x <- df$time  # Time of Trial (first value in 4d vector)
+  y <- df$avgspike  #Average Number of Spikes in all Brain Areas per Trial
+  
+  #Create a new data frame for plotting
+  plot_data[[i]] <- data.frame(x = x, y = y, group = as.factor(i))
+}
+
+#Combine the data frames from each dataframe into a single data frame
+combined_data <- do.call(rbind, plot_data)
+
+# Create the line plot with 18 curves and smoothing
+ggplot(combined_data, aes(x = x, y = y, color = group)) +
+  geom_smooth(span=0.5) + #span is able to set the level of smoothness
+  theme_bw() +
+  labs(x = "Time of Trial", y = "Average Number of Spikes (All Brain Areas) per Session", title = "Time vs. Average Number of Spikes of All Brain Areas per Session") +
+  labs(color = "Session #")
+```
+
+The above plot describes the time of each trial vs the average number of spikes per brain area per session. For the purpose of this figure, the "benchmark" method was employed where the average of all brain spikes in the various brain areas for each session were taken per trial. This information was  displayed with some smoothing over the total time of the trials by session. 
+
+Session 13 appears to have the highest average number of spikes of brain areas while Session 5 appears to have the lowest. It seems that for the most part, with the exception of some minor fluctuations througohut the duration of the session, the first and last trial seem to have a similar average number of spikes for most sessions. Most of the average spikes per session seem to be in the 1.5 to 2 spike range as indicated by the dense overlapping of the curves above.
+
+# (iv) Homogeneity and Heterogeneity across Sessions and Mice
+
+```{r, echo= FALSE}
+ggplot(meta, aes(x = session, y = success_rate)) +
+  geom_line(aes(color = mouse_name )) +
+  geom_point(aes(color = mouse_name )) +
+  labs(x = "Session", y= "Success Rate") +
+  ggtitle("SUCCESS RATE BY SESSION") +
+  scale_color_discrete(name = "Mouse Name")
+
+```
+
+This figure demonstrates the success rate for the different mice across sessions. It is evident that Lederberg has the highest success rates while Cori has the least. It is also interesting to note that the average success rate per mouse begins to increase as we move across session numbers. 
+
+
+```{r, echo= FALSE}
+
+# Convert Session to factor with desired order
+combined_df$Session <- factor(combined_df$Session, levels = paste("Session", 1:18))
+
+# Create a new column for Mouse based on Session numbers
+combined_df$Mouse <- factor(
+  ifelse(as.integer(gsub("Session", "", combined_df$Session)) %in% 1:3, "Cori",
+         ifelse(as.integer(gsub("Session", "", combined_df$Session)) %in% 4:7, "Forssmann",
+                ifelse(as.integer(gsub("Session", "", combined_df$Session)) %in% 8:11, "Hench", "Lederberg")))
+)
+
+# Create a histogram plot for each mouse
+histogram_plot <- ggplot(combined_df, aes(x = AvgSpike)) +
+  geom_histogram(aes(y = ..count..), bins = 10, fill = "lightblue", color = "black") +
+  geom_density(color = "red") +
+  labs(x = "Average Spike Count", y = "Count") +
+  ggtitle("Histograms with Density Curves of Average Spike Count") +
+  facet_wrap(~ Session, nrow = 3, scales = "free_x") +
+  facet_grid(Mouse ~ ., scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# Display the plot
+print(histogram_plot)
+
+
+```
+
+The above histograms reflect the average spike count for neural activity across all brain areas for each mouse. Lederberg seems to have the most consistent spikes throughout sessions while the remaining mice fluctuate throughout the experiments.
+
+```{r, echo= FALSE}
+# Convert Session to factor with desired order
+feedback_df$Session <- factor(feedback_df$Session, levels = paste("Session", 1:18))
+
+# Convert Feedback_Label to factor
+feedback_df$Feedback_Label <- factor(feedback_df$Feedback_Label, levels = c("Failure", "Success"))
+
+# Set custom fill colors
+fill_colors <- c("Failure" = "lightblue", "Success" = "lightgreen")
+
+# Create a new column for Mouse based on Session numbers
+feedback_df$Mouse <- factor(
+  ifelse(as.integer(gsub("Session", "", feedback_df$Session)) %in% 1:3, "Cori",
+         ifelse(as.integer(gsub("Session", "", feedback_df$Session)) %in% 4:7, "Forssmann",
+                ifelse(as.integer(gsub("Session", "", feedback_df$Session)) %in% 8:11, "Hench", "Lederberg")))
+)
+
+# Create a histogram plot for each mouse
+histogram_plot <- ggplot(feedback_df, aes(x = Feedback_Label, fill = Feedback_Label)) +
+  geom_bar() +
+  scale_fill_manual(values = fill_colors) +
+  labs(x = "Feedback", y = "Count") +
+  ggtitle("Histograms of Feedback Type By Mouse") +
+  facet_wrap(~ Mouse, nrow = 2, ncol = 2, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# Display the plot
+print(histogram_plot)
+
+```
+
+
+The above four histograms reflect the feedback type for each mouse. The x axis reflects a failure or success and the y axis represents the frequency of these outcomes.Lederberg has the greatest number of successes while Cori has the least. For all mice except Lederberg, the number of successes is similar to the number of failures. Additionally both bars increase from mouse to mouse which can be explained by the greater number of trials run. The difference between the failure and success bars also slowly increase with time from the first mouse Cori to the last mouse Lederberg. 
+
+# IV. Data Integration
+
+In this section we will combine significant features across the 18 sessions such as feedback type, left contrast, right contrast, and the average spike level - then run Principal Component Analysis (PCA) on the scaled data. 
+
+```{r, echo= FALSE}
+# Create an empty list to store the session-level data
+session_data <- list()
+
+# Iterate over each session and prepare the data for modeling
+for (i in 1:length(session)) {
+  # Extract relevant variables from the session data
+  feedback_type <- session[[i]]$feedback_type
+  left_contrast <- session[[i]]$contrast_left
+  right_contrast <- session[[i]]$contrast_right
+  
+  # Add session number to the dataframe
+  session_number <- rep(i, length(feedback_type))
+  
+  # Combine the variables into a data frame
+  session_df <- data.frame(session_number, feedback_type, left_contrast, right_contrast)
+  
+  # Append the session dataframe to the list
+  session_data[[i]] <- session_df
+}
+
+# Combine the session-level data into a single data frame
+combined_data <- do.call(rbind, session_data)
+
+# Loop through sessions 2 to 18
+for (i in 1:18) {
+  # Find the matching rows in combined_data and sessionX_trial_summary based on session_number
+  matching_rows <- combined_data$session_number %in% get(paste0("session", i, "_trial_summary"))$session_number
+  
+  # Update the avgspike values in combined_data for the matching rows
+  combined_data$avgspike[matching_rows] <- get(paste0("session", i, "_trial_summary"))$avgspike
+}
+
+# Print the updated combined_data
+#combined_data
+
+```
+
+```{r, echo= FALSE}
+PCA_data = combined_data[, c("left_contrast", "right_contrast", "avgspike")]
+PCA_data = scale(PCA_data)
+
+PCA_result = prcomp(PCA_data, scale. = TRUE)
+
+summary(PCA_result)
+
+PCA_df = as.data.frame(PCA_result$x)
+
+PCA_df$session_number = combined_data$session_number
+
+ggplot(PCA_df, aes(x = PC1, y=PC2, color = as.factor(session_number))) +
+  geom_point()+
+  labs(color = "Session Number") +
+  theme_minimal() +
+  ggtitle("PCA Plot")
+```
+
+
+
+Here we perform principal component analysis on the combined_data dataframe generating a plot reflecting data points on the first two components.Based on the close proximity of the lines from various sessions, we can understand which sessions exude similar characteristics across the features represented in the data frame. The plot highlights that sessions 11,14,and 15 as well as session 1 and 2, and session 2 and 12 are clustered in a very close range indicating matching feature behavior. 
+
+# V. Predictive Modeling
+
+The type of feedback, left and right contrast, and spike counts will all be used in this section's new combined data frame to create a prediction model using logistic regression (method = "glm"), with feedback_type serving as the response variable and the other variables serving as predictors. The confusion matrix and numerous performance measures, including accuracy, sensitivity, specificity, positive predictive value, negative predictive value, prevalence, and others, are also calculated.
+
+
+```{r, echo= FALSE}
+# Load required libraries
+library(caret)
+
+# Create an empty list to store the session-level data
+session_data <- list()
+
+# Iterate over each session and prepare the data for modeling
+for (i in 1:length(session)) {
+  # Extract relevant variables from the session data
+  feedback_type <- session[[i]]$feedback_type
+  spk_counts <- sapply(session[[i]]$spks, function(x) sum(rowSums(x)))
+  left_contrast <- session[[i]]$contrast_left
+  right_contrast <- session[[i]]$contrast_right
+  
+  # Combine the variables into a data frame
+  session_data[[i]] <- data.frame(feedback_type, spk_counts, left_contrast, right_contrast)
+}
+
+# Combine the session-level data into a single data frame
+combined_data <- do.call(rbind, session_data)
+
+combined_data$feedback_type = as.factor(combined_data$feedback_type)
+
+```
+
+```{r, echo=FALSE}
+#Empty list to store test data
+test=list()
+
+#Read and store the test data for each session (1-2)
+for(i in 1:2){
+  test[[i]]=readRDS(paste('~/Desktop/everything./stats/sta 141a/Project/test/test',i,'.rds',sep=''))
+}
+
+```
+
+
+
+```{r, echo=FALSE}
+
+test_data = list()
+
+for(i in 1:length(test)){
+  feedback_type <- test[[i]]$feedback_type
+  spk_counts <- sapply(test[[i]]$spks, function(x) sum(rowSums(x)))
+  left_contrast <- test[[i]]$contrast_left
+  right_contrast <- test[[i]]$contrast_right
+  
+  # Combine the variables into a data frame
+  test_data[[i]] <- data.frame(feedback_type, spk_counts, left_contrast, right_contrast)
+}
+
+# Combine the session-level data into a single data frame
+test_data <- do.call(rbind, test_data)
+
+test_data$feedback_type = as.factor(test_data$feedback_type)
+
+
+set.seed(123)
+training_data = combined_data
+test_data = test_data
+
+model = train(feedback_type ~ ., data = training_data, method = "glm", family = "binomial")
+
+predictions = predict(model, newdata = test_data)
+
+confusion_matrix = confusionMatrix(predictions,test_data$feedback_type)
+confusion_matrix
+
+
+```
+
+
+# VI. Predictive Performance Results
+
+The output and conclusions from the predictive model that was built in the Predictive Modeling section will be interpreted in this part.The model's accuracy on the test data is roughly 0.725, which means that in roughly 72.5% of instances, it predicts the feedback_type accurately.The actual positive rate, also known as sensitivity, is 0.0000. This shows that the model has difficulty correctly identifying the positive class or failures (-1).The model does a good job of recognizing the negative class; the specificity, or genuine negative rate, is 1.0000 for successses (1).In the test results, the prevalence of the positive class is roughly 0.275.The agreement between the model's predictions and the actual feedback_type is gauged by the Kappa statistic. It is 0 in this situation, suggesting that there is no agreement beyond what would be predicted by chance.
+
+A classification model's performance is summarized in the confusion matrix. The confusion matrix is displayed for the binary classification issue in this case, with the prediction class having two levels (-1 and 1) and the reference class having two levels (-1 and 1). The model correctly predicted the negative class (-1) in situations where the actual class was similarly negative. The count of 0 indicates that there were no actual negatives in this situation. The model incorrectly predicted the positive class (1) while the actual true class was actually negative (-1). The count of 0, which is zero, indicates that there were no false positives. The model incorrectly predicted the value for the negative class (-1) when the actual class was positive (i.e., 1). There are 55 cases, which suggests that the model mistook 55 positive instances for negative ones. The model correctly predicted the positive class when the actual class was also positive (1). The high figure of 145 indicates that the model accurately identified 145 cases as positive.
+
+# VII. Conclusion and Discussion 
+
+These results suggest that the model does not predict the positive class well (-1) and that overall agreement is no better than chance (Kappa = 0). The predicted performance may require additional research and model elaboration. Creating two distinct logistic prediction models on Sessions #1 and #18 to better forecast the positive class and using SVM (Support Vector Machines) instead of logistic are two additional techniques that may be used if more time were available in the future. 
+
+## References
+1. Distributed coding of choice, action and engagement across the mouse brain - https://www.nature.com/articles/s41586-019-1787-x 
+2. ChatGPT
+
+
+
+### Code Appendix
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+```
+
